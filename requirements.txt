@@ -1,0 +1,7 @@
+Flask>=3.0.0
+scapy>=2.5.0
+psutil>=5.9.0
+
+# Optional: netifaces (preferred on Linux/macOS, but requires C++ compiler on Windows)
+# On Windows, psutil will be used automatically if netifaces is not available
+# netifaces>=0.11.0

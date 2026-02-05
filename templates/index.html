@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DHCP Starvation Simulator</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="title-section">
+                    <h1 class="main-title">DHCP Starvation Simulator</h1>
+                    <p class="subtitle">Educational Cybersecurity Tool</p>
+                </div>
+                <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">
+                    <svg class="sun-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                    <svg class="moon-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <!-- Left Panel - Controls -->
+            <div class="left-panel">
+                <div class="card">
+                    <h2 class="card-title">Attack Configuration</h2>
+                    
+                    <!-- Interface Selection -->
+                    <div class="form-group">
+                        <label for="interfaceSelect" class="form-label">Network Interface</label>
+                        <select id="interfaceSelect" class="form-select">
+                            <option value="">Loading interfaces...</option>
+                        </select>
+                    </div>
+
+                    <!-- DHCP Server -->
+                    <div class="form-group">
+                        <label for="dhcpServer" class="form-label">DHCP Server IP</label>
+                        <div class="input-group">
+                            <input 
+                                type="text" 
+                                id="dhcpServer" 
+                                class="form-input" 
+                                placeholder="192.168.1.1"
+                            >
+                            <button id="discoverBtn" class="btn-secondary">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <path d="m21 21-4.35-4.35"></path>
+                                </svg>
+                                Discover
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Attack Button -->
+                    <div class="attack-controls">
+                        <button id="attackBtn" class="btn-primary">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                            </svg>
+                            Start Attack
+                        </button>
+                    </div>
+
+                    <!-- Status Indicator -->
+                    <div id="statusIndicator" class="status-indicator status-idle">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Idle</span>
+                    </div>
+                </div>
+
+                <!-- Warning Card -->
+                <div class="card warning-card">
+                    <div class="warning-icon">⚠️</div>
+                    <h3 class="warning-title">Educational Use Only</h3>
+                    <p class="warning-text">
+                        This tool is designed for authorized security testing and educational purposes only. 
+                        Unauthorized use against networks you don't own or have permission to test is illegal.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Right Panel - Results -->
+            <div class="right-panel">
+                <!-- Network Information -->
+                <div class="card">
+                    <h2 class="card-title">Network Information</h2>
+                    <div class="network-info-grid" id="networkInfo">
+                        <div class="info-item">
+                            <span class="info-label">Router IP</span>
+                            <span class="info-value" id="routerIp">—</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Subnet Mask</span>
+                            <span class="info-value" id="subnetMask">—</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">DHCP Server</span>
+                            <span class="info-value" id="dhcpServerInfo">—</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Pool Range</span>
+                            <span class="info-value" id="poolRange">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stolen IPs Table -->
+                <div class="card table-card">
+                    <div class="table-header">
+                        <h2 class="card-title">Exhausted IP Addresses</h2>
+                        <span class="ip-counter" id="ipCounter">0 IPs</span>
+                    </div>
+                    
+                    <div class="table-container">
+                        <table class="ip-table">
+                            <thead>
+                                <tr>
+                                    <th>IP Address</th>
+                                    <th>MAC Address</th>
+                                    <th>Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="stolenIpsTable">
+                                <tr class="empty-state">
+                                    <td colspan="3">No IPs exhausted yet. Start an attack to see results.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
