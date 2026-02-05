@@ -278,13 +278,27 @@ function updateStolenIpsTable(ips) {
         return;
     }
 
-    // Get current IPs in table
-    const currentIps = new Set(
-        Array.from(stolenIpsTable.querySelectorAll('tr:not(.empty-state)'))
-            .map(row => row.cells[0]?.textContent)
-    );
+    // Get current IPs in table for comparison
+    const currentIps = new Map();
+    Array.from(stolenIpsTable.querySelectorAll('tr:not(.empty-state)')).forEach(row => {
+        const ipAddress = row.cells[0]?.textContent;
+        if (ipAddress) {
+            currentIps.set(ipAddress, row);
+        }
+    });
 
-    // Update table
+    // Get IPs from backend
+    const backendIps = new Set(ips.map(ip => ip.ip));
+
+    // Remove rows that no longer exist in backend (were released)
+    currentIps.forEach((row, ipAddress) => {
+        if (!backendIps.has(ipAddress)) {
+            row.classList.add('ip-row-exit');
+            setTimeout(() => row.remove(), 300);
+        }
+    });
+
+    // Add new IPs that aren't in the table yet
     const fragment = document.createDocumentFragment();
 
     ips.forEach(ip => {
