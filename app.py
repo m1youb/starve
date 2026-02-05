@@ -191,6 +191,44 @@ def send_arp_reply(src_ip, source_mac, server_ip, server_mac, interface):
         print(f"[-] ARP reply error: {e}")
 
 
+def dhcp_send_release(ip_address, mac_address, server_ip, interface):
+    """Send DHCP release to free up an IP address"""
+    try:
+        # Convert MAC address string to proper format
+        if isinstance(mac_address, str):
+            # Parse MAC address from string format
+            mac_bytes = mac_address.replace(':', '').replace('-', '')
+            mac_obj = mac_address
+        else:
+            mac_obj = mac_address
+        
+        # Create DHCP release packet
+        release = Ether(src=mac_obj, dst="ff:ff:ff:ff:ff:ff")
+        release /= IP(src=ip_address, dst=server_ip)
+        release /= UDP(sport=68, dport=67)
+        release /= BOOTP(
+            chaddr=mac2str(mac_obj),
+            ciaddr=ip_address,
+            xid=random.randint(1, 1000000000)
+        )
+        release /= DHCP(options=[
+            ("message-type", "release"),
+            ("server_id", server_ip),
+            "end"
+        ])
+        
+        # Send release packet
+        sendp(release, iface=interface, verbose=0)
+        print(f"[✓] DHCP Release sent for {ip_address} (MAC: {mac_obj})")
+        return True
+        
+    except Exception as e:
+        print(f"[-] DHCP Release error for {ip_address}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def dhcp_starvation_attack(interface, dhcp_server):
     """Perform DHCP starvation attack - improved version"""
     global stolen_ips, attack_running, stop_attack_flag
@@ -388,6 +426,100 @@ def attack_status():
         'running': attack_running,
         'stolen_ips': stolen_ips,
         'network_info': network_info
+    })
+
+
+@app.route('/api/attack/release', methods=['POST'])
+def release_ip():
+    """API endpoint to release a specific IP address"""
+    global stolen_ips
+    
+    data = request.json
+    ip_address = data.get('ip')
+    interface = data.get('interface')
+    dhcp_server = data.get('dhcp_server')
+    
+    if not ip_address or not interface or not dhcp_server:
+        return jsonify({'error': 'IP, interface, and DHCP server required'}), 400
+    
+    # Find the IP in stolen_ips
+    ip_entry = None
+    for entry in stolen_ips:
+        if entry['ip'] == ip_address:
+            ip_entry = entry
+            break
+    
+    if not ip_entry:
+        return jsonify({'error': 'IP address not found in stolen IPs'}), 404
+    
+    # Send DHCP release
+    success = dhcp_send_release(
+        ip_address=ip_address,
+        mac_address=ip_entry['mac'],
+        server_ip=dhcp_server,
+        interface=interface
+    )
+    
+    if success:
+        # Remove from stolen_ips
+        stolen_ips = [ip for ip in stolen_ips if ip['ip'] != ip_address]
+        return jsonify({
+            'status': 'IP released successfully',
+            'ip': ip_address,
+            'remaining': len(stolen_ips)
+        })
+    else:
+        return jsonify({'error': 'Failed to release IP'}), 500
+
+
+@app.route('/api/attack/release-all', methods=['POST'])
+def release_all_ips():
+    """API endpoint to release all stolen IP addresses"""
+    global stolen_ips
+    
+    data = request.json
+    interface = data.get('interface')
+    dhcp_server = data.get('dhcp_server')
+    
+    if not interface or not dhcp_server:
+        return jsonify({'error': 'Interface and DHCP server required'}), 400
+    
+    if not stolen_ips:
+        return jsonify({'error': 'No stolen IPs to release'}), 400
+    
+    total = len(stolen_ips)
+    released = 0
+    failed = 0
+    
+    print(f"[*] Releasing {total} IP addresses...")
+    
+    # Release each IP
+    for ip_entry in stolen_ips[:]:  # Use slice to avoid modification during iteration
+        success = dhcp_send_release(
+            ip_address=ip_entry['ip'],
+            mac_address=ip_entry['mac'],
+            server_ip=dhcp_server,
+            interface=interface
+        )
+        
+        if success:
+            released += 1
+        else:
+            failed += 1
+        
+        # Small delay to avoid overwhelming the network
+        time.sleep(0.05)
+    
+    # Clear all stolen IPs
+    stolen_ips = []
+    
+    print(f"[✓] Release complete: {released} successful, {failed} failed")
+    
+    return jsonify({
+        'status': 'All IPs released',
+        'total': total,
+        'released': released,
+        'failed': failed
     })
 
 
